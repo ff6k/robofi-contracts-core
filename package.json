@@ -4,7 +4,8 @@
   "description": "smart contracts for robofi",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "flat:vics-token": "truffle-flattener ./contracts/token/VICSToken.sol  | awk '/SPDX-License-Identifier/&&c++>0 {next} 1' > flattener/VICSToken.flattener.sol"
   },
   "dependencies": {
     "@openzeppelin/contracts": "^4.0.0",
