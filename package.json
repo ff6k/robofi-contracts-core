@@ -6,7 +6,8 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "flat:vics-token": "truffle-flattener ./contracts/token/VICSToken.sol  | awk '/SPDX-License-Identifier/&&c++>0 {next} 1' > flattener/VICSToken.flattener.sol",
-    "flat:private-sale": "truffle-flattener ./contracts/PrivateSaleLock.sol  | awk '/SPDX-License-Identifier/&&c++>0 {next} 1' > flattener/PrivateSaleLock.flattener.sol"
+    "flat:private-sale": "truffle-flattener ./contracts/PrivateSaleLock.sol  | awk '/SPDX-License-Identifier/&&c++>0 {next} 1' > flattener/PrivateSaleLock.flattener.sol",
+    "flat:treasury": "truffle-flattener ./contracts/treasury/TreasuryAsset.sol  | awk '/SPDX-License-Identifier/&&c++>0 {next} 1' > flattener/TreasuryAsset.flattener.sol"
   },
   "dependencies": {
     "@openzeppelin/contracts": "^4.0.0",
