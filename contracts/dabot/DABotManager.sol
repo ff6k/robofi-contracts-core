@@ -21,7 +21,7 @@ abstract contract BotManagerSetting is Context, Ownable, IDABotManager {
         _settings.operatorAddress = _msgSender();
         _settings.proposalDeposit = 100 * 1e18;
         _settings.proposalReward = 70;
-        _settings.minCreatorDeposit = 10000 * 1e18;
+        _settings.minCreatorDeposit = 0;
     }
 
     /**
