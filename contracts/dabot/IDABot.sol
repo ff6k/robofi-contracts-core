@@ -70,6 +70,7 @@ library DABotCommon {
     }
 
     function setIboTime(BotSetting storage info, uint start, uint end) internal {
+        require(start < end);
         info.iboTime = uint64((end << 32) | start);
     }
 
@@ -123,7 +124,7 @@ interface IDABot {
     by only the DABotManager.
      */
     function botDetails() view external returns(DABotCommon.BotDetail memory);
-    
+
 }
 
 
