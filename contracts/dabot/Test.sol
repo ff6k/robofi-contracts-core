@@ -8,9 +8,10 @@ import "../Ownable.sol";
 import "./IDABot.sol";
 import "./CertToken.sol";
 
-
-abstract contract DABotShare {
+contract TestDABot is Context, Ownable, RoboFiTokenSnapshot {
     DABotCommon.BotSetting internal _setting;
+
+    using DABotCommon for DABotCommon.BotSetting;
 
     string constant ERR_PERMISSION_DENIED = "DABot: permission denied";
     string constant ERR_INVALID_PORTFOLIO_ASSET = "DABot: invalid portfolio asset";
@@ -25,19 +26,16 @@ abstract contract DABotShare {
     address public immutable voteController;
     address public immutable masterContract = address(this);
 
+     string private _botname;
+
     constructor( IRoboFiToken vics, 
                 IDABotManager manager,
-                address voter) {
+                address voter) RoboFiToken("", "", 0, _msgSender()) {
         vicsToken = vics;
         botManager = manager;
         voteController = voter;
     }
-}
 
-abstract contract DABotSetting is DABotShare {
-
-    using DABotCommon for DABotCommon.BotSetting;
-    
     /**
     @dev Ensure the modification of bot settings to comply with the following rule:
 
@@ -49,9 +47,7 @@ abstract contract DABotSetting is DABotShare {
         _;
     }
 
-    function settable(address) view internal virtual returns(bool);
-
-        /**
+    /**
     @dev Retrieves the IBO period of this bot.
      */
     function iboTime() view external returns(uint startTime, uint endTime) {
@@ -97,10 +93,6 @@ abstract contract DABotSetting is DABotShare {
     function setProfitSharing(uint sharingScheme) external SettingGuard {
         _setting.setProfitShare(sharingScheme);
     }
-}
-
-abstract contract DABotStaking is DABotShare, Context, Ownable {
-    using DABotCommon for DABotCommon.BotSetting;
 
     IRoboFiToken[] internal _assets; 
     mapping(IRoboFiToken => DABotCommon.PortfolioAsset) internal _portfolio;
@@ -146,12 +138,11 @@ abstract contract DABotStaking is DABotShare, Context, Ownable {
     TODO: support warm-up feature to release token 
      */
     function stake(IRoboFiToken asset, uint amount) external virtual {
-        require(_setting.iboStartTime() <= block.timestamp, ERR_PERMISSION_DENIED);
+        require(_setting.iboStartTime() >= block.timestamp, ERR_PERMISSION_DENIED);
         require(address(asset) != address(0), ERR_INVALID_PORTFOLIO_ASSET);
 
         DABotCommon.PortfolioAsset storage pAsset = _portfolio[asset];
         require(pAsset.certAsset != address(0), ERR_INVALID_PORTFOLIO_ASSET);
-        
         uint stakeAmount = (pAsset.totalStake + amount) > pAsset.cap ? pAsset.cap - pAsset.totalStake : amount;
         require(stakeAmount > 0, ERR_INVALID_STAKE_AMOUNT);
 
@@ -185,22 +176,6 @@ abstract contract DABotStaking is DABotShare, Context, Ownable {
     /**
     @dev Adds (or updates) a stake-able asset in the portfolio. 
      */
-    function updatePortfolio(IRoboFiToken asset, uint maxCap, uint iboCap, uint weight) external onlyOwner {
-        _updatePortfolio(asset, maxCap, iboCap, weight);
-    }
-
-    /**
-    @dev Removes an asset from the bot's porfolio. 
-
-    It requires that none is currently staking to this asset. Otherwise, the transaction fails.
-     */
-    function removeAsset(IRoboFiToken asset) public onlyOwner {
-        _removeAsset(asset);
-    }
-
-    /**
-    @dev Adds (or updates) a stake-able asset in the portfolio. 
-     */
     function _updatePortfolio(IRoboFiToken asset, uint maxCap, uint iboCap, uint weight) internal {
         require(address(asset) != address(0), ERR_INVALID_PORTFOLIO_ASSET);
 
@@ -221,6 +196,7 @@ abstract contract DABotStaking is DABotShare, Context, Ownable {
         
         emit PortfolioUpdated(address(asset), address(pAsset.certAsset), maxCap, weight);
     }
+
 
     function _removeAsset(IRoboFiToken asset) internal {
         require(address(asset) != address(0), "DABot: null asset");
@@ -245,23 +221,6 @@ abstract contract DABotStaking is DABotShare, Context, Ownable {
             output[i].info = _portfolio[_assets[i]];
             output[i].userStake = stakeBalanceOf(_msgSender(), _assets[i]);
         }
-    }
-}
-
-/**
-@dev Base contract module for a DABot.
- */
-contract DABotBase is DABotShare, DABotSetting, DABotStaking, RoboFiTokenSnapshot {
-
-    using DABotCommon for DABotCommon.BotSetting;
-
-    string private _botname;
-
-    constructor(string memory templateName, 
-                IRoboFiToken vics, 
-                IDABotManager manager,
-                address voter) RoboFiToken("", "", 0, _msgSender()) DABotShare(vics, manager, voter) {
-        _botname = templateName;
     }
 
     /**
@@ -300,7 +259,7 @@ contract DABotBase is DABotShare, DABotSetting, DABotStaking, RoboFiTokenSnapsho
         return "1.0";
     }
 
-    function settable(address account) view internal override returns(bool) {
+    function settable(address account) view internal returns(bool) {
         if (block.timestamp > _setting.iboStartTime())
             return (account == voteController);
         return(account == owner());
@@ -331,7 +290,21 @@ contract DABotBase is DABotShare, DABotSetting, DABotStaking, RoboFiTokenSnapsho
         output.portfolio = portfolio();
     }
 
-    
+    /**
+    @dev Adds (or updates) a stake-able asset in the portfolio. 
+     */
+    function updatePortfolio(IRoboFiToken asset, uint maxCap, uint iboCap, uint weight) external onlyOwner {
+        _updatePortfolio(asset, maxCap, iboCap, weight);
+    }
+
+    /**
+    @dev Removes an asset from the bot's porfolio. 
+
+    It requires that none is currently staking to this asset. Otherwise, the transaction fails.
+     */
+    function removeAsset(IRoboFiToken asset) public onlyOwner {
+        _removeAsset(asset);
+    }
 
     /**
     @dev Calculate the ouput government tokens, given the input VICS amount.
@@ -342,4 +315,4 @@ contract DABotBase is DABotShare, DABotSetting, DABotStaking, RoboFiTokenSnapsho
             multiplier = _setting.priceMultiplier();
         return (10000 - commission) * vicsAmount *  _setting.initFounderShare / priceMul  /  _setting.initDeposit / 100;
     }
-}
+}   

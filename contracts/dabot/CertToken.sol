@@ -29,4 +29,8 @@ contract CertToken is PeggedToken {
     function decimals() public view override returns (uint8) {
         return IRoboFiToken(address(asset)).decimals();
     }
+
+    function _transferToken(address recepient, uint amount) internal override {
+        // Do nothing, the token should be transfer from the owner bot.
+    }
 }

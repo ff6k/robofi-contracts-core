@@ -146,7 +146,7 @@ contract DABotManager is BotManagerSetting {
     Should only be called internally by a bot.
      */
     function deployBotCertToken(address peggedAsset) external override returns(address token) {
-        token = factory.deploy(certTokenMaster, abi.encodePacked(peggedAsset, _msgSender()), false);
+        token = factory.deploy(certTokenMaster, abi.encode(peggedAsset, _msgSender()), false);
 
         emit CertTokenDeployed(_msgSender(), peggedAsset, token);
     }
