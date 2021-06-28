@@ -131,6 +131,11 @@ interface IDABot {
 interface IDABotManager {
     
     /**
+    @dev Gets the address to receive tax.
+     */
+    function taxAddress() external view returns (address);
+
+    /**
     @dev Gets the address of the platform operator.
      */
     function operatorAddress() external view returns (address);
@@ -158,6 +163,7 @@ interface IDABotManager {
     function deployBotCertToken(address peggedAsset) external returns(address);
 
     event OperatorAddressChanged(address indexed account);
+    event TaxAddressChanged(address indexed account);
     event ProposalDepositChanged(uint value);
     event ProposalRewardChanged(uint value);
     event MinCreatorDepositChanged(uint value);

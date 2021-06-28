@@ -207,6 +207,7 @@ abstract contract DABotStaking is DABotShare, Context, Ownable {
         DABotCommon.PortfolioAsset storage pAsset = _portfolio[asset];
 
         if (address(pAsset.certAsset) == address(0)) {
+            require(block.timestamp < _setting.iboStartTime(), "");
             require(maxCap > 0, ERR_ZERO_CAP);
             require(weight > 0, ERR_ZERO_WEIGHT);
             pAsset.certAsset = botManager.deployBotCertToken(address(asset));
@@ -248,10 +249,113 @@ abstract contract DABotStaking is DABotShare, Context, Ownable {
     }
 }
 
+abstract contract DABotGovernance is DABotShare, DABotStaking, RoboFiTokenSnapshot {
+    using DABotCommon for DABotCommon.BotSetting;
+
+   
+
+    /**
+    @dev Calculates the shares available for purchasing for the specified account.
+
+    During the IBO time, the amount of available shares for purchasing is derived from
+    the staked asset (refer to the Concept Paper for details). 
+    
+    After IBO, the availalbe amount equals to the uncirculated amount of goveranance tokens.
+     */
+    function availableSharesFor(address account) view public virtual returns(uint) {
+        if (block.timestamp < _setting.iboStartTime()) return 0;
+        if (block.timestamp > _setting.iboEndTime()) return _setting.maxShare - totalSupply();
+
+        uint totalWeight = 0;
+        uint totalPoint = 0;
+        for (uint i = 0; i < _assets.length; i ++) {
+            IRoboFiToken asset = _assets[i];
+            DABotCommon.PortfolioAsset storage pAsset = _portfolio[asset];
+            totalPoint += stakeBalanceOf(account, asset) * pAsset.weight / pAsset.iboCap;
+            totalWeight += pAsset.weight;
+        }
+
+        return _setting.iboShare * totalPoint / totalWeight;
+    }
+
+    /**
+    @dev Returns the value (in VICS) of an amount of shares. 
+    The returned value depends on the amount of circulated bot's share tokens, and the amount
+    of deposited VICS inside the bot.
+     */
+    function shareValue(uint amount) view public returns (uint) {
+        return amount * vicsToken.balanceOf(address(this)) / totalSupply();
+    }
+
+    /**
+    @dev Deposits an amount of VICS to the bot and get the equivalent governance token (i.e., Bots' shares).
+
+    
+     */
+    function deposit(uint vicsAmount) public virtual {
+        _deposit(_msgSender(), vicsAmount);
+    }
+
+    function _deposit(address account, uint vicsAmount) internal virtual {
+        uint fee;
+        uint shares;
+        uint payment;
+        (payment, shares, fee) = calcOutShares(account, vicsAmount);
+        vicsToken.transferFrom(account, botManager.taxAddress(), fee); 
+        vicsToken.transferFrom(account, address(this), payment);
+        _mint(account, shares);
+    }
+
+     /**
+    @dev Calculates the ouput government tokens, given the input VICS amount. 
+
+    The function returns three outputs:
+        * shares: the output governenent tokens that could be purchased with the given input
+                  VICS amount, and other constraints (i.e., IBO time, stake amount.)
+        * payment: the amount of VICS (without fee) will be deposited to the bot.
+        * fee: the commission fee to transfer to the operator address 
+
+     */
+    function calcOutShares(address account, uint vicsAmount) view public virtual returns(uint payment, uint shares, uint fee) {
+        uint priceMultipler = 100; 
+        uint commission = 0;
+        if (block.timestamp >= _setting.iboEndTime()) {
+            priceMultipler = _setting.priceMultiplier();
+            commission = _setting.commission();
+        }
+        uint outAmount = (10000 - commission) * vicsAmount *  _setting.initFounderShare / priceMultipler / _setting.initDeposit / 100; 
+        uint maxAmount = availableSharesFor(account);
+
+        if (outAmount <= maxAmount) {
+            shares = outAmount;
+            fee = vicsAmount * commission / 10000; 
+            payment = vicsAmount - fee;
+        } else {
+            shares = maxAmount;
+            payment = maxAmount * _setting.initDeposit * priceMultipler / _setting.initFounderShare / 100;
+            fee = payment * commission / (1000 - commission);
+        }
+    }
+
+    /**
+    @dev Burns the bot's shares to get back VICS. The amount of returned VICS is proportional of amount
+    of circulated bot's shares and deposited VICS.
+     */
+    function redeem(uint amount) public virtual {
+        _redeem(_msgSender(), amount);
+    }
+
+    function _redeem(address account, uint amount) internal virtual {
+        uint value = shareValue(amount);
+        _burn(account, amount);
+        vicsToken.transfer(account, value);
+    }
+}
+
 /**
 @dev Base contract module for a DABot.
  */
-contract DABotBase is DABotShare, DABotSetting, DABotStaking, RoboFiTokenSnapshot {
+contract DABotBase is DABotSetting, DABotGovernance {
 
     using DABotCommon for DABotCommon.BotSetting;
 
@@ -331,15 +435,5 @@ contract DABotBase is DABotShare, DABotSetting, DABotStaking, RoboFiTokenSnapsho
         output.portfolio = portfolio();
     }
 
-    
 
-    /**
-    @dev Calculate the ouput government tokens, given the input VICS amount.
-     */
-    function calcOutToken(uint vicsAmount, uint priceMul, uint commission) view public returns(uint) {
-        uint multiplier = 100; 
-        if (block.timestamp >= _setting.iboEndTime())
-            multiplier = _setting.priceMultiplier();
-        return (10000 - commission) * vicsAmount *  _setting.initFounderShare / priceMul  /  _setting.initDeposit / 100;
-    }
 }

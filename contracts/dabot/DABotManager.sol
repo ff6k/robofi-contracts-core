@@ -9,6 +9,7 @@ import "./IDABot.sol";
 abstract contract BotManagerSetting is Context, Ownable, IDABotManager {
     struct DABotSetting {
         address operatorAddress;
+        address taxAddress;     // the address to receive commission fee 
         uint proposalDeposit;   // the amount of VICS a user has to deposit to create new proposalDeposit
         uint8 proposalReward;   // the percentage of proposalDeposit for awarding proposal settlement (for both approved and expired proposals).
                                 // the remain part of proposalDeposit will go to operatorAddress.
@@ -30,6 +31,13 @@ abstract contract BotManagerSetting is Context, Ownable, IDABotManager {
     function operatorAddress() external view override returns(address) {
         return _settings.operatorAddress;
     }
+
+    /**
+    @dev Gets the address to receiving tax.
+     */
+    function taxAddress() external view override returns(address) {
+        return _settings.taxAddress;
+    }
     
     /**
     @dev Gets the deposit amount (in VICS) that a person has to pay to create a proposal.
@@ -50,6 +58,12 @@ abstract contract BotManagerSetting is Context, Ownable, IDABotManager {
         _settings.operatorAddress = account;
 
         emit OperatorAddressChanged(account);
+    }
+
+    function setTaxAddress(address account) external onlyOwner {
+        _settings.taxAddress = account;
+
+        emit TaxAddressChanged(account);
     }
     
     function setProposalDeposit(uint amount) external onlyOwner {
