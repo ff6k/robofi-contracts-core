@@ -54,9 +54,6 @@ contract('DABotBaseTest', async (accounts) => {
             await dabot.setPricePolicy(150, 50);
             await dabot.setProfitSharing(200);            
 
-            assert.equal(await dabot.calcOutToken(1000, 100, 0) / 1,  2000);
-            assert.equal(await dabot.calcOutToken(1000, 100, 100) / 1, 1980) ;
-
             await dabot.setIBOTime(10, 100);
 
             let detail = await dabot.botDetails();
@@ -123,21 +120,33 @@ contract('DABotBaseTest', async (accounts) => {
         it('Stake/unstake', async() => {
             let bot = await CEXDABot.new(vics.address, botmanager.address, admin);
             await bot.renounceOwnership();
+
+            let iboStart = new Date();
+            let iboEnd = new Date();
+
+            iboStart.setHours(iboStart.getHours() + 1);
+            iboEnd.setMonth(iboEnd.getMonth() + 1);
+
+            console.log(iboStart.getTime());
+
             let data = web3.eth.abi.encodeParameters
                             (['string', 'address', 'uint64', 'uint16', 'uint32', 'uint144', 'uint', 'uint', 'uint', 'uint'],
-                            ['sample', admin, new BN(1627201595 /*2021-07-25*/, 10).shln(32).ior(1624609595 /*2021-06-25 */), 
-                                                    0, 0, 0, 100, 200, 10000, 5000]);
+                            ['sample', admin, new BN(iboEnd.getTime()/1000, 10).shln(32).ior(iboStart.getTime()/1000), 
+                                                    0, 0, 0, 100 /* init deposit */, 200 /* init founder share */, 10000 /* max share */, 5000 /* iboshare */ ]);
             await bot.init(data);
-            await bot.updatePortfolio(usdt.address, 2000, 1000, 50);
+            await bot.updatePortfolio(usdt.address, 2000 /* max cap */, 1000 /* ibo cap */, 50);
 
-            truffleAssert.fails(bot.stake(usdt.address, 1000));
+            truffleAssert.fails(bot.stake(usdt.address, 1000), message = "Fail to stake before IBO");
+            assert.equal(await bot.availableSharesFor(admin), 0, "0 share available before IBO");
 
-            await bot.setIBOTime(1624362230/*2021-06-22 */, 1627201595 /*2021-07-25*/); 
+            iboStart.setHours(iboStart.getHours() - 2);
+            await bot.setIBOTime(iboEnd.getTime() / 1000, iboEnd.getTime() / 1000); 
 
             await usdt.approve(bot.address, 10000);
-            await bot.stake(usdt.address, 1000);
+            await bot.stake(usdt.address, 500);
 
-            assert.equal(await bot.stakeBalanceOf(admin, usdt.address), 1000);
+            assert.equal(await bot.stakeBalanceOf(admin, usdt.address), 500);
+            assert.equal(await bot.availableSharesFor(amin), 2500);
             
         });
     });
