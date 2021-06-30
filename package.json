@@ -8,7 +8,8 @@
     "flat:vics-token": "truffle-flattener ./contracts/token/VICSToken.sol  | awk '/SPDX-License-Identifier/&&c++>0 {next} 1' > flattener/VICSToken.flattener.sol",
     "flat:private-sale": "truffle-flattener ./contracts/PrivateSaleLock.sol  | awk '/SPDX-License-Identifier/&&c++>0 {next} 1' > flattener/PrivateSaleLock.flattener.sol",
     "flat:treasury": "truffle-flattener ./contracts/treasury/TreasuryAsset.sol  | awk '/SPDX-License-Identifier/&&c++>0 {next} 1' > flattener/TreasuryAsset.flattener.sol",
-    "flat:dabot-manager": "truffle-flattener ./contracts/dabot/DABotManager.sol  | awk '/SPDX-License-Identifier/&&c++>0 {next} 1' > flattener/DABotManager.flattener.sol"
+    "flat:dabot-manager": "truffle-flattener ./contracts/dabot/DABotManager.sol  | awk '/SPDX-License-Identifier/&&c++>0 {next} 1' > flattener/DABotManager.flattener.sol",
+    "flat:vest": "truffle-flattener ./contracts/VestingLockPool.sol  | awk '/SPDX-License-Identifier/&&c++>0 {next} 1' > flattener/VestingLockPool.flattener.sol"
   },
   "dependencies": {
     "@openzeppelin/contracts": "^4.0.0",
