@@ -7,6 +7,7 @@ contract CEXDABot is DABotBase {
     
     constructor(IRoboFiToken vics, 
                 IDABotManager manager,
-                address voter)  DABotBase("CEX DABot", vics, manager, voter) {
+                address locker,
+                address voter)  DABotBase("CEX DABot", vics, manager, locker, voter) { 
     }
 }

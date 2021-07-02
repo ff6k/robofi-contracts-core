@@ -90,7 +90,7 @@ contract DABotManager is BotManagerSetting {
 
     IDABot[] private _bots;
     address[] private _templates;
-    RoboFiFactory public factory;
+    RoboFiFactory public override factory;
     IRoboFiToken public vicsToken;
     address public certTokenMaster;
 
@@ -100,6 +100,10 @@ contract DABotManager is BotManagerSetting {
         factory = _factory;
         vicsToken = IRoboFiToken(vics);
         certTokenMaster = _certTokenMaster;
+    }
+
+    function setCertTokenMaster(address certToken) external onlyOwner {
+        certTokenMaster = certToken;
     }
     
     function totalBots() external view returns(uint) {

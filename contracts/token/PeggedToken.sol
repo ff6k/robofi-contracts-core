@@ -63,9 +63,17 @@ contract PeggedToken is RoboFiToken {
         return _pointBalances[sender];
     }
 
-    function mint(address recepient, uint amount) external onlyOwner payable returns (uint256 mintedPoint) {
+    function mint(address recepient, uint amount) external onlyOwner payable returns (uint256) {
+        return _mint(recepient, recepient, amount);
+    }
+
+    function mintTo(address payor, address recepient, uint amount) external onlyOwner payable returns(uint256) {
+        return _mint(payor, recepient, amount);
+    }
+
+    function _mint(address payor, address recepient, uint amount) internal returns(uint256 mintedPoint) {
         mintedPoint = divPointRate(amount);
-        _transferToken(recepient, amount);
+        _transferToken(payor, amount);
         super._mint(recepient, amount);
         _pointBalances[recepient] += mintedPoint;
         pointSupply += mintedPoint;
@@ -73,8 +81,9 @@ contract PeggedToken is RoboFiToken {
         emit Mint(recepient, amount, mintedPoint);
     }
 
-    function _transferToken(address recepient, uint amount) internal virtual {
-        asset.transferFrom(recepient, address(this), amount);
+    function _transferToken(address payor, uint amount) internal virtual {
+        if (payor != address(0))
+            asset.transferFrom(payor, address(this), amount);
     }
 
     function burn(address account, uint amount) external onlyOwner {

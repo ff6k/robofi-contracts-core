@@ -9,27 +9,31 @@ const DABotBase = artifacts.require('DABotBase');
 const CEXDABot = artifacts.require('CEXDABot');
 const DABotManager = artifacts.require('DABotManager');
 const CertToken = artifacts.require('CertToken');
+const Locker = artifacts.require('CertLocker');
 const VICS = artifacts.require('VICSToken');
 
 
 contract('DABotBaseTest', async (accounts) => {
 
     const admin = accounts[0];
+    const alice = accounts[1];
+
     let dabot;
     let certtoken;
     let vics;
     let botmanager;
     let factory;
     let cexdabot;
+    let locker;
     let usdt;
-    let bnb;
 
     before(async ()=> {
         vics = await VICS.new(100000000);
         factory = await Factory.new();
         certtoken = await CertToken.new();
         botmanager = await DABotManager.new(factory.address, vics.address, certtoken.address);
-        dabot = await DABotBase.new('sample', vics.address, botmanager.address, admin);
+        locker = await Locker.new();
+        dabot = await DABotBase.new('sample', vics.address, botmanager.address, locker.address, admin);
         cexdabot = dabot; // await CEXDABot.new(vics.address, botmanager.address, admin);
         usdt = await RoboFiToken.new("USDT", "USDT", 10000000, admin);
         bnb = await RoboFiToken.new("BNB", "BNB", 1000000, admin);
@@ -96,14 +100,26 @@ contract('DABotBaseTest', async (accounts) => {
         });
 
         it('Add/remove porfolio asset', async() => {
-            let bot = await CEXDABot.new(vics.address, botmanager.address, admin);
+            let bot = await CEXDABot.new(vics.address, botmanager.address, locker.address, admin);
             await bot.renounceOwnership();
+
+            let iboStart = new Date();
+            let iboEnd = new Date();
+
+            iboStart.setHours(iboStart.getHours() + 1);
+            iboEnd.setMonth(iboEnd.getMonth() + 1);
+            let iboTime = new BN(Math.trunc(iboEnd.getTime()/1000), 10).shln(32).add(new BN(Math.trunc(iboStart.getTime()/1000), 10));
+
             let data = web3.eth.abi.encodeParameters
                             (['string', 'address', 'uint64', 'uint16', 'uint32', 'uint144', 'uint', 'uint', 'uint', 'uint'],
-                            ['sample', admin, new BN(1627201595 /*2021-07-25*/, 10).shln(32).ior(1624609595 /*2021-06-25 */), 
-                                                    0, 0, 0, 100, 200, 10000, 5000]);
+                            ['sample', admin, iboTime, 0, 0, 0, 100, 200, 10000, 5000]);
+            console.log('initialize bot');
             await bot.init(data);
+
+            console.log('update portfolio');
             await bot.updatePortfolio(usdt.address, 2000, 1000, 50);
+
+            console.log("validate porfolio");
             let portfolio = await bot.portfolio();
             let cert = portfolio[0];
 
@@ -118,36 +134,53 @@ contract('DABotBaseTest', async (accounts) => {
         });
 
         it('Stake/unstake', async() => {
-            let bot = await CEXDABot.new(vics.address, botmanager.address, admin);
-            await bot.renounceOwnership();
-
             let iboStart = new Date();
             let iboEnd = new Date();
 
             iboStart.setHours(iboStart.getHours() + 1);
             iboEnd.setMonth(iboEnd.getMonth() + 1);
+            let iboTime = new BN(Math.trunc(iboEnd.getTime()/1000), 10).shln(32).add(new BN(Math.trunc(iboStart.getTime()/1000), 10));
 
-            console.log(iboStart.getTime());
+            let tx = await botmanager.deployBot(cexdabot.address, 'Sample', [
+                iboTime, /* iboTime */, 
+                0 /* stakingtime */, 
+                0 /* price policy */, 
+                0 /* profit sharing */, 
+                100 /* init deposit */, 
+                200 /* founder share */, 
+                10000 /* gtoken: max cap */, 
+                5000 /* supply for IBO */]);
 
-            let data = web3.eth.abi.encodeParameters
-                            (['string', 'address', 'uint64', 'uint16', 'uint32', 'uint144', 'uint', 'uint', 'uint', 'uint'],
-                            ['sample', admin, new BN(iboEnd.getTime()/1000, 10).shln(32).ior(iboStart.getTime()/1000), 
-                                                    0, 0, 0, 100 /* init deposit */, 200 /* init founder share */, 10000 /* max share */, 5000 /* iboshare */ ]);
-            await bot.init(data);
+            let result = tx.logs[1].args;
+
+            console.log(`Bot id: ${result.botId}, @: ${result.bot}`);
+
+            let bot = await CEXDABot.at(result.bot);
+
             await bot.updatePortfolio(usdt.address, 2000 /* max cap */, 1000 /* ibo cap */, 50);
+            let portfolio = await bot.portfolio();
 
-            truffleAssert.fails(bot.stake(usdt.address, 1000), message = "Fail to stake before IBO");
+            assert.equal(portfolio.length, 1);
+            console.log(`Certasset: ${portfolio[0].info.certAsset}`);
+            let botusdt = await CertToken.at(portfolio[0].info.certAsset);
+
+            truffleAssert.fails(bot.stake(usdt.address, 1000), message = "DABot: permission denied");
             assert.equal(await bot.availableSharesFor(admin), 0, "0 share available before IBO");
 
             iboStart.setHours(iboStart.getHours() - 2);
-            await bot.setIBOTime(iboEnd.getTime() / 1000, iboEnd.getTime() / 1000); 
+            await bot.setIBOTime(Math.trunc(iboStart.getTime() / 1000), Math.trunc(iboEnd.getTime() / 1000)); 
 
-            await usdt.approve(bot.address, 10000);
-            await bot.stake(usdt.address, 500);
+            console.log("Update IBO time");
 
-            assert.equal(await bot.stakeBalanceOf(admin, usdt.address), 500);
-            assert.equal(await bot.availableSharesFor(amin), 2500);
-            
+            // transfer usdt to alice
+            await usdt.transfer(alice, 500, { from: admin });
+
+            await usdt.approve(bot.address, 10000, { from: alice });
+            await bot.stake(usdt.address, 500, { from: alice });
+
+            assert.equal(await bot.stakeBalanceOf(alice, usdt.address), 500, "wrong usdt stake balance");
+            assert.equal(await bot.availableSharesFor(alice), 2500, "wrong purchasable g-token");
+            assert.equal(await botusdt.balanceOf(alice), 500, "wrong usdt certificate balance");
         });
     });
 });

@@ -2,6 +2,8 @@
 
 pragma solidity ^0.8.0;
 
+import "../Factory.sol";
+
 library DABotCommon {
 
     enum ProfitableActors { BOT_CREATOR, GOVERNANCE_USER, STAKE_USER, ROBOFI_GAME }
@@ -70,7 +72,7 @@ library DABotCommon {
     }
 
     function setIboTime(BotSetting storage info, uint start, uint end) internal {
-        require(start < end);
+        require(start < end, "invalid ibo start/end time");
         info.iboTime = uint64((end << 32) | start);
     }
 
@@ -130,6 +132,8 @@ interface IDABot {
 
 interface IDABotManager {
     
+    function factory() external view returns(RoboFiFactory);
+
     /**
     @dev Gets the address to receive tax.
      */

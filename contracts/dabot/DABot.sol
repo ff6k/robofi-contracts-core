@@ -7,6 +7,7 @@ import "../token/IRoboFiToken.sol";
 import "../Ownable.sol";
 import "./IDABot.sol";
 import "./CertToken.sol";
+import "./CertLocker.sol";
 
 
 abstract contract DABotShare {
@@ -23,13 +24,16 @@ abstract contract DABotShare {
     IRoboFiToken public immutable vicsToken;
     IDABotManager public immutable botManager;
     address public immutable voteController;
+    address public immutable warmupLocker;
     address public immutable masterContract = address(this);
 
     constructor( IRoboFiToken vics, 
                 IDABotManager manager,
+                address locker,
                 address voter) {
         vicsToken = vics;
         botManager = manager;
+        warmupLocker = locker;
         voteController = voter;
     }
 }
@@ -104,6 +108,7 @@ abstract contract DABotStaking is DABotShare, Context, Ownable {
 
     IRoboFiToken[] internal _assets; 
     mapping(IRoboFiToken => DABotCommon.PortfolioAsset) internal _portfolio;
+    mapping(address => mapping(IRoboFiToken => CertLocker[])) internal _lockers;
 
     event PortfolioUpdated(address indexed asset, address indexed certAsset, uint maxCap, uint weight);
     event AssetRemoved(address indexed asset);   
@@ -113,8 +118,14 @@ abstract contract DABotStaking is DABotShare, Context, Ownable {
     @dev Gets the stake amount of a specific account of a stake-able asset.
      */
     function stakeBalanceOf(address account, IRoboFiToken asset) view public returns(uint) {
-        // TODO: to consider stake in warming up
-        return certificateOf(asset).balanceOf(account);
+        return certificateOf(asset).balanceOf(account) + lockedCertificateOf(account, asset);
+    }
+
+    function lockedCertificateOf(address account, IRoboFiToken asset) view public returns(uint result) {
+        mapping(IRoboFiToken => CertLocker[]) storage lockers = _lockers[account];
+        result = 0;
+        for (uint i = 0; i < lockers[asset].length; i++)
+            result += lockers[asset][i].lockedBalance();
     }
 
     /**
@@ -175,10 +186,10 @@ abstract contract DABotStaking is DABotShare, Context, Ownable {
     function _mintCertificate(IRoboFiToken asset, uint amount) internal {
         DABotCommon.PortfolioAsset storage pAsset = _portfolio[asset];
         asset.transferFrom(_msgSender(), address(pAsset.certAsset), amount);
-
+        // asset.transfer(address(pAsset.certAsset), amount);
         CertToken token = CertToken(pAsset.certAsset);
         // TODO: to implement warm-up feature
-        token.mint(_msgSender(), amount);
+        token.mintTo(address(0), _msgSender(), amount);
         pAsset.totalStake += amount;
     }
 
@@ -207,7 +218,7 @@ abstract contract DABotStaking is DABotShare, Context, Ownable {
         DABotCommon.PortfolioAsset storage pAsset = _portfolio[asset];
 
         if (address(pAsset.certAsset) == address(0)) {
-            require(block.timestamp < _setting.iboStartTime(), "");
+            require(block.timestamp < _setting.iboStartTime(), ERR_PERMISSION_DENIED);
             require(maxCap > 0, ERR_ZERO_CAP);
             require(weight > 0, ERR_ZERO_WEIGHT);
             pAsset.certAsset = botManager.deployBotCertToken(address(asset));
@@ -364,7 +375,8 @@ contract DABotBase is DABotSetting, DABotGovernance {
     constructor(string memory templateName, 
                 IRoboFiToken vics, 
                 IDABotManager manager,
-                address voter) RoboFiToken("", "", 0, _msgSender()) DABotShare(vics, manager, voter) {
+                address locker,
+                address voter) RoboFiToken("", "", 0, _msgSender()) DABotShare(vics, manager, locker, voter) {
         _botname = templateName;
     }
 
