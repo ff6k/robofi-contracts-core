@@ -9,7 +9,8 @@ const DABotBase = artifacts.require('DABotBase');
 const CEXDABot = artifacts.require('CEXDABot');
 const DABotManager = artifacts.require('DABotManager');
 const CertToken = artifacts.require('CertToken');
-const Locker = artifacts.require('CertLocker');
+const WarmupLocker = artifacts.require('WarmupLocker');
+const CooldownLocker = artifacts.require('CooldownLocker');
 const VICS = artifacts.require('VICSToken');
 
 
@@ -24,7 +25,7 @@ contract('DABotBaseTest', async (accounts) => {
     let botmanager;
     let factory;
     let cexdabot;
-    let locker;
+    let warmupLocker, cooldownLocker;
     let usdt;
 
     before(async ()=> {
@@ -32,8 +33,9 @@ contract('DABotBaseTest', async (accounts) => {
         factory = await Factory.new();
         certtoken = await CertToken.new();
         botmanager = await DABotManager.new(factory.address, vics.address, certtoken.address);
-        locker = await Locker.new();
-        dabot = await DABotBase.new('sample', vics.address, botmanager.address, locker.address, admin);
+        warmupLocker = await WarmupLocker.new();
+        cooldownLocker = await CooldownLocker.new();
+        dabot = await DABotBase.new('sample', vics.address, botmanager.address, warmupLocker.address, cooldownLocker.address, admin);
         cexdabot = dabot; // await CEXDABot.new(vics.address, botmanager.address, admin);
         usdt = await RoboFiToken.new("USDT", "USDT", 10000000, admin);
         bnb = await RoboFiToken.new("BNB", "BNB", 1000000, admin);
@@ -54,7 +56,7 @@ contract('DABotBaseTest', async (accounts) => {
                             ['sample', admin, '0x0FFFFF000FFFFE', 0, 0, 0, 100, 200, 1000000, 500000]);
             await dabot.init(data);
 
-            await dabot.setStakingTime(20, 30);
+            await dabot.setStakingTime(20, 30, 0);
             await dabot.setPricePolicy(150, 50);
             await dabot.setProfitSharing(200);            
 
@@ -100,7 +102,7 @@ contract('DABotBaseTest', async (accounts) => {
         });
 
         it('Add/remove porfolio asset', async() => {
-            let bot = await CEXDABot.new(vics.address, botmanager.address, locker.address, admin);
+            let bot = await CEXDABot.new(vics.address, botmanager.address, warmupLocker.address, cooldownLocker.address, admin);
             await bot.renounceOwnership();
 
             let iboStart = new Date();
@@ -164,23 +166,117 @@ contract('DABotBaseTest', async (accounts) => {
             console.log(`Certasset: ${portfolio[0].info.certAsset}`);
             let botusdt = await CertToken.at(portfolio[0].info.certAsset);
 
-            truffleAssert.fails(bot.stake(usdt.address, 1000), message = "DABot: permission denied");
+            await truffleAssert.fails(bot.stake(usdt.address, 1000), message = "DABot: permission denied");
             assert.equal(await bot.availableSharesFor(admin), 0, "0 share available before IBO");
 
             iboStart.setHours(iboStart.getHours() - 2);
             await bot.setIBOTime(Math.trunc(iboStart.getTime() / 1000), Math.trunc(iboEnd.getTime() / 1000)); 
 
-            console.log("Update IBO time");
-
+            console.log("Staking");
             // transfer usdt to alice
             await usdt.transfer(alice, 500, { from: admin });
-
+            
             await usdt.approve(bot.address, 10000, { from: alice });
             await bot.stake(usdt.address, 500, { from: alice });
 
             assert.equal(await bot.stakeBalanceOf(alice, usdt.address), 500, "wrong usdt stake balance");
             assert.equal(await bot.availableSharesFor(alice), 2500, "wrong purchasable g-token");
             assert.equal(await botusdt.balanceOf(alice), 500, "wrong usdt certificate balance");
+
+            console.log("Unstaking");
+            await truffleAssert.fails(bot.unstake(botusdt.address, 500, { from: alice }), message = "DABot: permission denied");
+
+            let newiboEnd = new Date();
+            newiboEnd.setMinutes(newiboEnd.getMinutes() - 1);
+            await bot.setIBOTime(Math.trunc(iboStart.getTime() / 1000), Math.trunc(newiboEnd.getTime() / 1000)); 
+
+            await bot.unstake(botusdt.address, 500, { from: alice });
+            assert.equal(await usdt.balanceOf(alice), 500);
+            assert.equal(await botusdt.balanceOf(alice), 0);
+
+        });
+
+        it('Warmup/Cooldown', async() => {
+            let iboStart = new Date();
+            let iboEnd = new Date();
+
+            iboStart.setHours(iboStart.getHours() + 1);
+            iboEnd.setMonth(iboEnd.getMonth() + 1);
+            let iboTime = new BN(Math.trunc(iboEnd.getTime()/1000), 10).shln(32).add(new BN(Math.trunc(iboStart.getTime()/1000), 10));
+
+            let tx = await botmanager.deployBot(cexdabot.address, 'Sample', [
+                iboTime, /* iboTime */, 
+                0x040203 /* stakingtime */, 
+                0 /* price policy */, 
+                0 /* profit sharing */, 
+                100 /* init deposit */, 
+                200 /* founder share */, 
+                10000 /* gtoken: max cap */, 
+                5000 /* supply for IBO */]);
+
+            let result = tx.logs[1].args;
+
+            console.log(`Bot id: ${result.botId}, @: ${result.bot}`);
+
+            let bot = await CEXDABot.at(result.bot);
+
+            await bot.updatePortfolio(usdt.address, 2000 /* max cap */, 1000 /* ibo cap */, 50);
+            let portfolio = await bot.portfolio();
+
+            assert.equal(portfolio.length, 1);
+            console.log(`Certasset: ${portfolio[0].info.certAsset}`);
+            let botusdt = await CertToken.at(portfolio[0].info.certAsset);
+
+            console.log("Staking with warming-up locker");
+            iboStart.setHours(iboStart.getHours() - 2);
+
+            let aliceUSDT = (await usdt.balanceOf(alice)).toNumber() + 500;
+
+            await bot.setIBOTime(Math.trunc(iboStart.getTime() / 1000), Math.trunc(iboEnd.getTime() / 1000)); 
+            await usdt.transfer(alice, 500, { from: admin });
+            await usdt.approve(bot.address, 10000, { from: alice });
+
+            await bot.stake(usdt.address, 500, { from: alice });
+
+            assert.equal(await usdt.balanceOf(alice), aliceUSDT - 500);
+            assert.equal(await botusdt.balanceOf(alice), 0, "certificate token should be warming-up");
+            assert.equal(await bot.warmupBalanceOf(alice, usdt.address), 500, "wrong warming-up token");
+            assert.equal(await bot.stakeBalanceOf(alice, usdt.address), 500, "wrong usdt stake balance");
+            assert.equal(await bot.availableSharesFor(alice), 2500, "wrong purchasable g-token");
+            
+            let warmups = await bot.warmupDetails(alice);
+            assert.equal(warmups.length, 1);
+
+            await sleep(3000);
+            await bot.releaseWarmup({from: alice});
+            assert.equal(await botusdt.balanceOf(alice), 500, "wrong certificate token balance");
+            
+            warmups = await bot.warmupDetails(alice);
+            assert.equal(warmups.length, 0);
+
+            console.log("Unstaking with cooling-down locker");
+            let newiboEnd = new Date();
+            newiboEnd.setMinutes(newiboEnd.getMinutes() - 1);
+            await bot.setIBOTime(Math.trunc(iboStart.getTime() / 1000), Math.trunc(newiboEnd.getTime() / 1000)); 
+
+            await botusdt.approve(bot.address, 9999999, {from: alice});
+            await bot.unstake(botusdt.address, 500, { from: alice });
+            
+            assert.equal(await botusdt.balanceOf(alice), 0);
+
+            let cooldown = await bot.cooldownDetails(alice);
+            assert.equal(cooldown.length, 1);
+
+            await sleep(3000);
+            await bot.releaseCooldown({from: alice});
+            assert.equal(await usdt.balanceOf(alice), aliceUSDT);
+
+            cooldown = await bot.cooldownDetails(alice);
+            assert.equal(cooldown.length, 0);
         });
     });
+
+    function sleep(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
 });

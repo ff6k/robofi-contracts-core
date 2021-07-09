@@ -7,8 +7,63 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "./CertToken.sol";
 import "./IDABot.sol";
 
+
+abstract contract CertLocker is IMasterContract {
+
+    DABotCommon.LockerInfo internal _info;
+
+    function init(bytes calldata data) external virtual payable override {
+        require(address(_info.owner) == address(0), "Locker: locker initialized");
+        (_info) = abi.decode(data, (DABotCommon.LockerInfo));
+    }
+
+    function lockedBalance() public view returns(uint) {
+        return CertToken(_info.token).balanceOf(address(this));
+    }
+
+    function asset() external view returns(IERC20) {
+        return CertToken(_info.token).asset();
+    }
+
+    function owner() external view returns(address) {
+        return _info.owner;
+    }
+
+    function detail() public view returns(DABotCommon.LockerInfoEx memory result) {
+        result.locker = address(this);
+        result.info = _info;
+        result.amount = CertToken(_info.token).balanceOf(address(this));
+        result.asset = address(CertToken(_info.token).asset());
+        result.reward = _getReward();
+    }
+
+    function _getReward() internal view virtual returns(uint256);
+
+    function unlockable() public view returns(bool) {
+        return block.timestamp >= _info.release_at;
+    }
+
+    /**
+    @dev Tries to unlock this locker if the time condition meets, otherise skipping the action.
+     */
+    function tryUnlock() public returns(bool) {
+        require(msg.sender == address(_info.bot), "Locker: Permission denial");
+        if (!unlockable()) 
+            return false;
+        _unlock();  
+        return true;
+    }
+
+    function _unlock() internal virtual;
+
+    function finalize() external payable {
+        require(msg.sender == address(_info.bot), "Locker: Permission denial");
+        selfdestruct(payable(_info.owner));
+    }
+}
+
 /**
-@dev This contract provides support for staking warm-up feature. 
+@dev This contract provides support for staking warmup feature. 
 When users stake into a DABot, user will not immediately receive the certificate token.
 Instead, these tokens will be locked inside an instance of this contract for a predefined
 period, the warm-up period. 
@@ -21,65 +76,56 @@ If users do not claim tokens after warm-up period, the tokens are still kept sec
 the contract. Locked tokens will also entitle to receive rewards. When users claim the tokens, 
 rewards will be distributed automatically to users' wallet. 
  */
-contract CertLocker is IMasterContract {
+contract WarmupLocker is CertLocker {
 
-    struct LockerInfo {
-        IDABot bot;             // the DABOT which creates this locker.
-        address owner;          // the locker owner, who is albe to unlock and get tokens after the specified release time.
-        CertToken token;        // the contract of the certificate token.
-        uint64 created_at;      // the moment when locker is created.
-        uint64 release_at;      // the monent when locker could be unlock. 
-    }
+    event Release(IDABot bot, address indexed owner, address certtoken, uint256 amount, uint256 reward);
 
-    struct LockerInfoEx {
-        LockerInfo info;
-        uint256 amount;         // the locked amount of cert token within this locker.
-        uint256 reward;         // the accumulated rewards
-        address asset;          // the stake asset beyond the certificated token
-    }
-
-    LockerInfo private _info;
-
-    event Unlock(IDABot bot, address indexed owner, CertToken token, uint256 amount, uint256 reward);
-
-    function init(bytes calldata data) external virtual payable override {
-        require(address(_info.owner) == address(0), "CertLocker: locker initialized");
-        (_info) = abi.decode(data, (LockerInfo));
-    }
-
-    function lockedBalance() public view returns(uint) {
-        return _info.token.balanceOf(address(this));
-    }
-
-    function getInfo() public view returns(LockerInfoEx memory result) {
-        result.info = _info;
-        result.amount = _info.token.balanceOf(address(this));
-        result.asset = address(_info.token.asset());
-        result.reward = _getReward();
-    }
-
-    function _getReward() internal view returns(uint256) {
+    function _getReward() internal view override returns(uint256) {
         return block.timestamp < _info.release_at ? 0 :
-                         _info.token.getClaimableReward(address(this)) * (block.timestamp - _info.release_at) / (block.timestamp - _info.created_at);
+                         CertToken(_info.token).getClaimableReward(address(this)) * (block.timestamp - _info.release_at) / (block.timestamp - _info.created_at);
     }
 
-    function unlock() public {
-        require(block.timestamp >= _info.release_at, "Token is locked");
+    function _unlock() internal override {
 
-        _info.token.claimReward();
-        IERC20 asset = _info.token.asset();
-        uint256 amount = _info.token.balanceOf(address(this));
-        uint256 rewards = asset.balanceOf(address(this));
-        _info.token.transfer(_info.owner, amount);
+        CertToken token = CertToken(_info.token);
+        
+        require(_info.token != address(0), "CertToken: null token address");
+        require(address(token.asset()) != address(0), "CertToken: null asset address");
+
+        token.claimReward();
+        IERC20 peggedAsset = token.asset();
+        uint256 amount = token.balanceOf(address(this));
+        uint256 rewards = peggedAsset.balanceOf(address(this));
+        token.transfer(_info.owner, amount);
         uint256 entitledRewards = _getReward();
         if (rewards > 0) {
             require(rewards >= entitledRewards, "Actual rewards is less than entitled rewards");
-            if (entitledRewards > 0) asset.transfer(_info.owner, entitledRewards);
-            if (rewards - entitledRewards > 0) asset.transfer(address(_info.token), rewards - entitledRewards);
+            if (entitledRewards > 0) peggedAsset.transfer(_info.owner, entitledRewards);
+            if (rewards - entitledRewards > 0) peggedAsset.transfer(_info.token, rewards - entitledRewards);
         }
+        emit Release(_info.bot, _info.owner, _info.token, amount, entitledRewards);
+    }
+}
 
-        emit Unlock(_info.bot, _info.owner, _info.token, amount, entitledRewards);
 
-        selfdestruct(payable(_info.owner));
+contract CooldownLocker is CertLocker {
+
+    event Release(IDABot bot, address indexed owner, address certtoken, uint256 penalty);
+
+    function _getReward() internal view override returns(uint256) {
+        return CertToken(_info.token).getClaimableReward(address(this)) * 10 / 100;
+    }
+
+    function _unlock() internal override {
+        CertToken token = CertToken(_info.token);
+        uint256 penalty = token.getClaimableReward(address(this)) * 90 / 100;
+        token.burn(token.balanceOf(address(this))); 
+
+        IERC20 peggedAsset = token.asset();
+        
+        peggedAsset.transfer(address(token), penalty);
+        peggedAsset.transfer(_info.owner, peggedAsset.balanceOf(address(this)));
+
+        emit Release(_info.bot, _info.owner, _info.token, penalty);
     }
 }

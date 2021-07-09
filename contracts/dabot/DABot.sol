@@ -16,24 +16,28 @@ abstract contract DABotShare {
     string constant ERR_PERMISSION_DENIED = "DABot: permission denied";
     string constant ERR_INVALID_PORTFOLIO_ASSET = "DABot: invalid portfolio asset";
     string constant ERR_INVALID_CERTIFICATE_ASSET = "DABot: invalid certificate asset";
-    string constant ERR_INVALID_STAKE_AMOUNT = "DABot: invalid stake amount";
+    string constant ERR_PORTFOLIO_FULL = "DABot: portfolio is full";
     string constant ERR_ZERO_CAP = "DABot: cap must be positive";
     string constant ERR_INVALID_CAP = "DABot: cap must be greater than stake and ibo cap";
     string constant ERR_ZERO_WEIGHT = "DABot: weight must positive";
+    string constant ERR_INSUFFICIENT_FUND = "DABot: insufficient fund";
 
     IRoboFiToken public immutable vicsToken;
     IDABotManager public immutable botManager;
     address public immutable voteController;
     address public immutable warmupLocker;
+    address public immutable cooldownLocker;
     address public immutable masterContract = address(this);
 
     constructor( IRoboFiToken vics, 
                 IDABotManager manager,
-                address locker,
+                address warmupMaster,
+                address cooldownMaster,
                 address voter) {
         vicsToken = vics;
         botManager = manager;
-        warmupLocker = locker;
+        warmupLocker = warmupMaster;
+        cooldownLocker = cooldownMaster;
         voteController = voter;
     }
 }
@@ -90,8 +94,8 @@ abstract contract DABotSetting is DABotShare {
         _setting.setIboTime(startTime, endTime);
     }
     
-    function setStakingTime(uint warmup, uint cooldown) external SettingGuard {
-        _setting.setStakingTime(warmup, cooldown);
+    function setStakingTime(uint warmup, uint cooldown, uint unit) external SettingGuard {
+        _setting.setStakingTime(warmup, cooldown, unit);
     }
 
     function setPricePolicy(uint priceMul, uint commission) external SettingGuard {
@@ -108,24 +112,100 @@ abstract contract DABotStaking is DABotShare, Context, Ownable {
 
     IRoboFiToken[] internal _assets; 
     mapping(IRoboFiToken => DABotCommon.PortfolioAsset) internal _portfolio;
-    mapping(address => mapping(IRoboFiToken => CertLocker[])) internal _lockers;
+    mapping(address => CertLocker[]) internal _warmup;
+    mapping(address => CertLocker[]) internal _cooldown;
 
     event PortfolioUpdated(address indexed asset, address indexed certAsset, uint maxCap, uint weight);
     event AssetRemoved(address indexed asset);   
-    event Stake(address indexed asset, address indexed account, uint amount);
+    event Stake(address indexed asset, address indexed account, address indexed  locker, uint amount);
+    event Unstake(address indexed certToken, address indexed account, address indexed  locker, uint amount);
 
     /**
     @dev Gets the stake amount of a specific account of a stake-able asset.
      */
     function stakeBalanceOf(address account, IRoboFiToken asset) view public returns(uint) {
-        return certificateOf(asset).balanceOf(account) + lockedCertificateOf(account, asset);
+        return certificateOf(asset).balanceOf(account) 
+                + warmupBalanceOf(account, asset);
     }
 
-    function lockedCertificateOf(address account, IRoboFiToken asset) view public returns(uint result) {
-        mapping(IRoboFiToken => CertLocker[]) storage lockers = _lockers[account];
+    /**
+    @dev Gets the amount of (warm-up) locked certificate tokens.
+     */
+    function warmupBalanceOf(address account, IRoboFiToken asset) view public returns(uint) {
+        CertLocker[] storage lockers = _warmup[account];
+        return _lockedBalance(lockers, address(asset));
+    }
+
+    /**
+    @dev Gets the amount of certificate tokens in cooldown period.
+     */
+    function cooldownBalanceOf(address account, CertToken certToken) view public returns(uint) {
+        CertLocker[] storage lockers = _cooldown[account];
+        return _lockedBalance(lockers, address(certToken.asset()));
+    }
+
+    function _lockedBalance(CertLocker[] storage lockers, address asset) view internal returns(uint result) {
         result = 0;
-        for (uint i = 0; i < lockers[asset].length; i++)
-            result += lockers[asset][i].lockedBalance();
+        for (uint i = 0; i < lockers.length; i++) 
+            if (address(lockers[i].asset()) == asset)
+                result += lockers[i].lockedBalance();
+    }
+
+   /**
+    @dev Gets detail information of warming-up certificate tokens (for all staked assets).
+    */
+    function warmupDetails(address account) view public returns(DABotCommon.LockerInfoEx[] memory) {
+        CertLocker[] storage lockers = _warmup[account];
+        return _lockerInfo(lockers);
+    }
+
+    /**
+    @dev Gets detail information of cool-down requests (for all certificate tokens)
+     */
+    function cooldownDetails(address account) view public returns(DABotCommon.LockerInfoEx[] memory) {
+        CertLocker[] storage lockers = _cooldown[account];
+         return _lockerInfo(lockers);
+    }
+
+    function _lockerInfo(CertLocker[] storage lockers) view internal returns(DABotCommon.LockerInfoEx[] memory result) {
+        result = new DABotCommon.LockerInfoEx[](lockers.length);
+        for (uint i = 0; i < lockers.length; i++) {
+            result[i] = lockers[i].detail();
+        }
+    }
+
+    /**
+    @dev Itegrates all lockers of the caller, and try to unlock these lockers if time condition meets.
+        The unlocked lockers will be removed from the global `_warmup`.
+
+        The function will return when one of the below conditions meet:
+        (1) 20 lockers has been unlocked,
+        (2) All lockers have been checked
+     */
+    function releaseWarmup() public {
+        CertLocker[] storage lockers = _warmup[_msgSender()];
+        _releaseLocker(lockers);
+    }
+
+    function _releaseLocker(CertLocker[] storage lockers) internal {
+        uint max = lockers.length < 20 ? lockers.length : 20;
+        uint idx = 0;
+        for (uint count = 0; count < max && idx < lockers.length;) {
+            CertLocker locker = lockers[idx];
+            if (!locker.tryUnlock()) {
+                idx++;
+                locker.finalize(); 
+                continue;
+            }
+            lockers[idx] = lockers[lockers.length - 1];
+            lockers.pop();
+            count++;
+        }
+    }
+
+    function releaseCooldown() public {
+        CertLocker[] storage lockers = _cooldown[_msgSender()];
+        _releaseLocker(lockers);
     }
 
     /**
@@ -138,11 +218,26 @@ abstract contract DABotStaking is DABotShare, Context, Ownable {
     /**
     @dev Get the crypto asset corresponding to the specified certificate token.
      */
-    function assetOf(address certToken) public view returns(IRoboFiToken) {
-        for (uint8 i = 0; i < _assets.length; i++)
-            if (_portfolio[_assets[i]].certAsset == certToken) return _assets[i];
+    function assetOf(address certToken) public view returns(IERC20) {
+        return CertToken(certToken).asset(); 
+    }
 
-        return IRoboFiToken(address(0));
+    /**
+    @dev Retrieves the max stakable amount for the specified asset.
+
+    During IBO, the max stakable amount is bound by the {portfolio[asset].iboCap}.
+    After IBO, it is limited by {portfolio[asset].cap}.
+     */
+    function getMaxStake(IRoboFiToken asset) public view returns(uint) {
+        if (block.timestamp < _setting.iboStartTime())
+            return 0;
+
+        DABotCommon.PortfolioAsset storage pAsset = _portfolio[asset];
+
+        if (block.timestamp < _setting.iboEndTime())
+            return pAsset.iboCap - pAsset.totalStake;
+
+        return pAsset.cap - pAsset.totalStake;
     }
 
     /**
@@ -153,44 +248,76 @@ abstract contract DABotStaking is DABotShare, Context, Ownable {
 
     When users stake during IBO time, users will immediately get the certificate token. After the
     IBO time, certificate token will be issued after a [warm-up] period.
-
-    TODO: support warm-up feature to release token 
      */
     function stake(IRoboFiToken asset, uint amount) external virtual {
-        require(_setting.iboStartTime() <= block.timestamp, ERR_PERMISSION_DENIED);
-        require(address(asset) != address(0), ERR_INVALID_PORTFOLIO_ASSET);
+        if (amount == 0) return;
 
         DABotCommon.PortfolioAsset storage pAsset = _portfolio[asset];
+
+        require(_setting.iboStartTime() <= block.timestamp, ERR_PERMISSION_DENIED);
+        require(address(asset) != address(0), ERR_INVALID_PORTFOLIO_ASSET);
         require(pAsset.certAsset != address(0), ERR_INVALID_PORTFOLIO_ASSET);
-        
-        uint stakeAmount = (pAsset.totalStake + amount) > pAsset.cap ? pAsset.cap - pAsset.totalStake : amount;
-        require(stakeAmount > 0, ERR_INVALID_STAKE_AMOUNT);
 
-        _mintCertificate(asset, stakeAmount);
+        uint maxStakeAmount = getMaxStake(asset);
+        require(maxStakeAmount > 0, ERR_PORTFOLIO_FULL);
 
-        emit Stake(address(asset), _msgSender(), stakeAmount);
+        uint stakeAmount = amount > maxStakeAmount ? maxStakeAmount : amount;
+        _mintCertificate(asset, stakeAmount);        
     }
 
     /**
     @dev Redeems an amount of certificate token to get back the original asset.
 
-    TODO: support cool-down feature to release asset.
+    All unstake requests are denied before ending of IBO.
      */
     function unstake(CertToken certAsset, uint amount) external virtual {
-        IRoboFiToken asset = assetOf(address(certAsset));
+        if (amount == 0) return;
+        IERC20 asset = certAsset.asset();
         require(address(asset) != address(0), ERR_INVALID_CERTIFICATE_ASSET);
+        require(_setting.iboEndTime() <= block.timestamp, ERR_PERMISSION_DENIED);
+        require(certAsset.balanceOf(_msgSender()) >= amount, ERR_INSUFFICIENT_FUND);
 
-        certAsset.burn(_msgSender(), amount);
+        _unstake(_msgSender(), certAsset, amount);
     }
 
     function _mintCertificate(IRoboFiToken asset, uint amount) internal {
         DABotCommon.PortfolioAsset storage pAsset = _portfolio[asset];
         asset.transferFrom(_msgSender(), address(pAsset.certAsset), amount);
-        // asset.transfer(address(pAsset.certAsset), amount);
         CertToken token = CertToken(pAsset.certAsset);
-        // TODO: to implement warm-up feature
-        token.mintTo(address(0), _msgSender(), amount);
+        uint duration = _setting.warmupTime() * _setting.getStakingTimeMultiplier();
+        
         pAsset.totalStake += amount;
+        address locker;
+
+        if (duration == 0) {
+            token.mintTo(address(0), _msgSender(), amount);
+        } else {
+            locker = botManager.factory().deploy(warmupLocker, 
+                    abi.encode(address(this), _msgSender(), pAsset.certAsset, block.timestamp, block.timestamp + duration), true);
+            _warmup[_msgSender()].push(WarmupLocker(locker));
+
+            token.mintTo(address(0), locker, amount);
+        }
+
+        emit Stake(address(asset), _msgSender(), locker, amount);
+    }
+
+    function _unstake(address account, CertToken certToken, uint amount) internal virtual {
+        uint duration = _setting.cooldownTime() * _setting.getStakingTimeMultiplier(); 
+
+        if (duration == 0) {
+            certToken.burn(_msgSender(), amount);
+            emit Unstake(address(certToken), account, address(0), amount);
+            return;
+        }
+
+        address locker = botManager.factory().deploy(cooldownLocker,
+                abi.encode(address(this), _msgSender(), address(certToken), block.timestamp, block.timestamp + duration), true);
+
+        _cooldown[account].push(CertLocker(locker));
+        certToken.transferFrom(account, locker, amount);
+
+        emit Unstake(address(certToken), account, locker, amount);
     }
 
     /**
@@ -266,7 +393,7 @@ abstract contract DABotGovernance is DABotShare, DABotStaking, RoboFiTokenSnapsh
    
 
     /**
-    @dev Calculates the shares available for purchasing for the specified account.
+    @dev Calculates the shares (g-tokens) available for purchasing for the specified account.
 
     During the IBO time, the amount of available shares for purchasing is derived from
     the staked asset (refer to the Concept Paper for details). 
@@ -290,7 +417,7 @@ abstract contract DABotGovernance is DABotShare, DABotStaking, RoboFiTokenSnapsh
     }
 
     /**
-    @dev Returns the value (in VICS) of an amount of shares. 
+    @dev Returns the value (in VICS) of an amount of shares (g-token). 
     The returned value depends on the amount of circulated bot's share tokens, and the amount
     of deposited VICS inside the bot.
      */
@@ -375,8 +502,9 @@ contract DABotBase is DABotSetting, DABotGovernance {
     constructor(string memory templateName, 
                 IRoboFiToken vics, 
                 IDABotManager manager,
-                address locker,
-                address voter) RoboFiToken("", "", 0, _msgSender()) DABotShare(vics, manager, locker, voter) {
+                address warmupLocker,
+                address cooldownLocker,
+                address voter) RoboFiToken("", "", 0, _msgSender()) DABotShare(vics, manager, warmupLocker, cooldownLocker, voter) {
         _botname = templateName;
     }
 
