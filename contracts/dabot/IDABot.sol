@@ -2,9 +2,12 @@
 
 pragma solidity ^0.8.0;
 
+import "../Factory.sol";
+
 library DABotCommon {
 
     enum ProfitableActors { BOT_CREATOR, GOVERNANCE_USER, STAKE_USER, ROBOFI_GAME }
+    enum StakingTimeUnit { DAY, HOUR, MINUTE, SECOND }
    
     struct PortfolioAsset {
         address certAsset;    // the certificate asset to return to stake-users
@@ -23,11 +26,12 @@ library DABotCommon {
     struct BotSetting {             // for saving storage, the meta-fields of a bot are encoded into a single uint256 byte slot.
         uint64 iboTime;             // 32 bit low: iboStartTime (unix timestamp), 
                                     // 32 bit high: iboEndTime (unix timestamp)
-        uint16 stakingTime;         // 8 bit low: warm-up time, 
-                                    // 8 bit high: cool-down time
+        uint24 stakingTime;         // 8 bit low: warm-up time, 
+                                    // 8 bit mid: cool-down time
+                                    // 8 bit high: time unit (0 - day, 1 - hour, 2 - minute, 3 - second)
         uint32 pricePolicy;         // 16 bit low: price multiplier (fixed point, 2 digits for decimal)
                                     // 16 bit high: commission fee in percentage (fixed point, 2 digit for decimal)
-        uint144 profitSharing;      // packed of 16bit profit sharing: bot-creator, gov-user, stake-user, and robofi-game
+        uint128 profitSharing;      // packed of 16bit profit sharing: bot-creator, gov-user, stake-user, and robofi-game
         uint initDeposit;           // the intial deposit (in VICS) of bot-creator
         uint initFounderShare;      // the intial shares (i.e., governance token) distributed to bot-creator
         uint maxShare;              // max cap of gtoken supply
@@ -61,6 +65,28 @@ library DABotCommon {
         UserPortfolioAsset[] portfolio;
     }
 
+    /**
+    @dev Records warming-up certificate tokens of a DABot.
+     */
+    struct LockerInfo {         
+        IDABot bot;             // the DABOT which creates this locker.
+        address owner;          // the locker owner, who is albe to unlock and get tokens after the specified release time.
+        address token;          // the contract of the certificate token.
+        uint64 created_at;      // the moment when locker is created.
+        uint64 release_at;      // the monent when locker could be unlock. 
+    }
+
+    /**
+    @dev Provides detail information of a warming-up token lock, plus extra information.
+     */
+    struct LockerInfoEx {
+        address locker;
+        LockerInfo info;
+        uint256 amount;         // the locked amount of cert token within this locker.
+        uint256 reward;         // the accumulated rewards
+        address asset;          // the stake asset beyond the certificated token
+    }
+   
     function iboStartTime(BotSetting storage info) view internal returns(uint) {
         return info.iboTime & 0xFFFFFFFF;
     }
@@ -70,7 +96,7 @@ library DABotCommon {
     }
 
     function setIboTime(BotSetting storage info, uint start, uint end) internal {
-        require(start < end);
+        require(start < end, "invalid ibo start/end time");
         info.iboTime = uint64((end << 32) | start);
     }
 
@@ -79,11 +105,23 @@ library DABotCommon {
     }
 
     function cooldownTime(BotSetting storage info) view internal returns(uint) {
-        return info.stakingTime >> 8;
+        return (info.stakingTime >> 8) & 0xFF;
     }
 
-    function setStakingTime(BotSetting storage info, uint warmup, uint cooldown) internal {
-        info.stakingTime = uint16((cooldown << 8) | warmup);
+    function getStakingTimeMultiplier(BotSetting storage info) view internal returns (uint) {
+        uint unit = stakingTimeUnit(info);
+        if (unit == 0) return 1 days;
+        if (unit == 1) return 1 hours;
+        if (unit == 2) return 1 minutes;
+        return 1 seconds;
+    }
+
+    function stakingTimeUnit(BotSetting storage info) view internal returns (uint) {
+        return (info.stakingTime >> 16);
+    }
+
+    function setStakingTime(BotSetting storage info, uint warmup, uint cooldown, uint unit) internal {
+        info.stakingTime = uint24((unit << 16) | (cooldown << 8) | warmup);
     }
 
     function priceMultiplier(BotSetting storage info) view internal returns(uint) {
@@ -103,7 +141,7 @@ library DABotCommon {
     }
 
     function setProfitShare(BotSetting storage info, uint sharingScheme) internal {
-        info.profitSharing = uint144(sharingScheme);
+        info.profitSharing = uint128(sharingScheme);
     }
 }
 
@@ -130,6 +168,8 @@ interface IDABot {
 
 interface IDABotManager {
     
+    function factory() external view returns(RoboFiFactory);
+
     /**
     @dev Gets the address to receive tax.
      */

@@ -43,6 +43,7 @@ contract PeggedToken is RoboFiToken {
     function init(bytes calldata data) external virtual payable override {
         require(address(asset) == address(0), "PeggedToken: contract initialized");
         (_name, _symbol, asset, _owner) = abi.decode(data, (string, string, IERC20, address));
+        asset.approve(_owner, type(uint256).max);
     }
 
     function finalize() external onlyOwner {
@@ -63,9 +64,17 @@ contract PeggedToken is RoboFiToken {
         return _pointBalances[sender];
     }
 
-    function mint(address recepient, uint amount) external onlyOwner payable returns (uint256 mintedPoint) {
+    function mint(address recepient, uint amount) external onlyOwner payable returns (uint256) {
+        return _mint(recepient, recepient, amount);
+    }
+
+    function mintTo(address payor, address recepient, uint amount) external onlyOwner payable returns(uint256) {
+        return _mint(payor, recepient, amount);
+    }
+
+    function _mint(address payor, address recepient, uint amount) internal returns(uint256 mintedPoint) {
         mintedPoint = divPointRate(amount);
-        _transferToken(recepient, amount);
+        _transferToken(payor, amount);
         super._mint(recepient, amount);
         _pointBalances[recepient] += mintedPoint;
         pointSupply += mintedPoint;
@@ -73,22 +82,31 @@ contract PeggedToken is RoboFiToken {
         emit Mint(recepient, amount, mintedPoint);
     }
 
-    function _transferToken(address recepient, uint amount) internal virtual {
-        asset.transferFrom(recepient, address(this), amount);
+    function _transferToken(address payor, uint amount) internal virtual {
+        if (payor != address(0))
+            asset.transferFrom(payor, address(this), amount);
     }
 
     function burn(address account, uint amount) external onlyOwner {
         _burn(account, amount);
     }
 
-    function claimReward() public {
-        _claimReward(_msgSender());
+    function burn(uint amount) external {
+        _burn(_msgSender(), amount);
     }
 
-    function _claimReward(address account) internal {
-        uint256 reward = getClaimableReward(account);
+    function claimReward() external returns(uint) {
+        return _claimReward(_msgSender());
+    }
+
+    function claimRewardFor(address account) external onlyOwner returns(uint) {
+        return _claimReward(account);
+    }
+
+    function _claimReward(address account) internal returns(uint reward) {
+        reward = getClaimableReward(account);
         if (reward == 0)
-            return;
+            return 0;
 
         uint256 newPointBalance = divPointRate(balanceOf(account));
         uint256 diffPointBalance = _pointBalances[account] - newPointBalance;
