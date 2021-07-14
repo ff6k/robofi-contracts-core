@@ -59,6 +59,7 @@ contract VestingLockPool is Context, Ownable {
         VestPool storage pool = _pools[poolOwner];
 
         require(pool.status == 0, "pool is canceled");
+        require(pool.amount - pool.debt >= 0, "insufficient fund");
 
         pool.status = 1;
         _asset.transfer(owner(), pool.amount - pool.debt);
@@ -73,6 +74,8 @@ contract VestingLockPool is Context, Ownable {
             return 0;
 
         uint256 moment = block.timestamp < pool.release_end ? block.timestamp : pool.release_end;
+        if (moment < pool.release_start)
+            return 0;
         uint256 fund = pool.amount * (moment - pool.release_start) / (pool.release_end - pool.release_start);
         return fund >= pool.debt ? fund - pool.debt : 0;
     }
